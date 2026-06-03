@@ -1,113 +1,155 @@
-## Dashboard stored procedure optimization
+## Authorization stored procedure optimization
 #### Scenario
-The Dashboard Request calls the main stored procedure GetDashboardCases. This file includes the optimization approach for GetDashboardCases. 
+The Dashboard procedure does a nested call to the auhorization procedure (GetAuthCaseListByUser) to get the list of authorized medical cases for the current user.This file includes the optimization approach for GetAuthCaseListByUser.
 
-### 1.	Nested procedure calls
-GetDashboardCases calls a nested procedure GetAuthCaseListByUser. The optimization for GetAuthCaseListByUser is included in the same reporditory under the folder authorization-query-analysis.
-
-### 2.	Eliminate subqueries
-Eliminated the subquery to return TotalDocs. Instead we used derived table.
+### 1.	Temporary Object Optimization
 ```sql
 -- before optimization
-SELECT mc.MedicalCaseId,
-  cpd.PrimaryPhysicianId,
-  CONCAT_WS(' ', concat(TU.LastName, ','), TU.FirstName, TU.MiddleName ) AS PrimaryPhysicianName ,
-  cpd.EventDatetime,
-  mc.CaseStatusId,
-  (select CaseStatusName from LK_CaseStatus where CaseStatusId = mc.CaseStatusId) AS CaseStatus,
-  p.patientid,
-  CONCAT_WS(' ', concat(p.lastname, ','), p.firstname, p.middlename) AS patientfullname,
-  p.DOB AS PatientDOB,
-  TotalDocs = (select count(documentId) from DocCaseMapping where MedicalCaseId = mc.caseId and IsActive = 1),
-  cpd.OrganizationId,
-  org.OrganizationName AS ClinicName
-FROM MedicalCases mc
-INNER JOIN @AuthCaseList ac ON mc.MedicalCaseId = ac.MedicalCaseId
-INNER JOIN CasePlanningDetails cpd ON mc.MedicalCaseId = cpd.MedicalCaseId
-INNER JOIN Patients p ON mc.patientid = p.patientid
-INNER JOIN Users u ON cpd.PrimaryphysicianId = u.UserId 
-INNER JOIN Organizations org ON cpd.OrganizationId = org.OrganizationId
-LEFT JOIN @CaseValidationStatus cvd ON cpd.MedicalCaseId = cvd.MedicalCaseId;
+DECLARE @AuthCaseList TABLE   
+(  
+	MedicalCaseId INT
+);  
+
+DECLARE @AuthorizedPhysiciansAndLocations TABLE   
+(	
+	PrimaryPhysicianId  NVARCHAR(50),  
+	OrganizationId INT,  
+	IsPhysician bit,  
+	AccessTypeId int
+)
 
 -- after optimization
-SELECT mc.MedicalCaseId,
-  cpd.PrimaryPhysicianId,
-  CONCAT_WS(' ', concat(TU.LastName, ','), TU.FirstName, TU.MiddleName ) AS PrimaryPhysicianName ,
-  cpd.EventDatetime,
-  mc.CaseStatusId,
-  lcs.CaseStatusName AS CaseStatus,
-  p.PatientId,
-  CONCAT_WS(' ', concat(pp.lastname, ','), pp.firstname, pp.middlename) AS patientfullname,
-  p.dateofbirth AS PatientDOB,
-  ISNULL(dcm.TotalDocs, 0),
-  cpd.OrganizationId,
-  org.OrganizationName AS ClinicName
-FROM   MedicalCases mc
-INNER JOIN @AuthCaseList ac ON mc.MedicalCaseId = ac.MedicalCaseId
-INNER JOIN LK_CaseStatus lcs ON mc.CaseStatusId = lcs.CaseStatusId
-INNER JOIN CasePlanningDetails cpd ON mc.MedicalCaseId = cpd.MedicalCaseId
-INNER JOIN Patients p ON mc.patientid = p.patientid
-INNER JOIN Users u ON cpd.PrimaryPhysicianId = u.UserId 
-INNER JOIN Organizations org ON cpd.OrganizationId = org.OrganizationId
-LEFT JOIN (
-  SELECT c.MedicalCaseId, COUNT(dcm.DocumentId) AS TotalDocs
-  FROM @AuthCaseList c
-  INNER JOIN DocCaseMapping dcm ON c.MedicalCaseId = dcm.MedicalCaseId AND dcm.IsActive = 1
-  GROUP BY c.MedicalCaseId
-) dcm ON mc.MedicalCaseId = dcm.MedicalCaseId
+Eliminated the temporary storage (@AuthCaseList) for list of medical cases.
+
+Table variable @AuthorizedPhysiciansAndLocations converted to #TempTable
+
+CREATE TABLE #AuthorizedPhysiciansAndOrganizations  (
+	PrimayPhysicianId  NVARCHAR(50),  
+	OrganizationId INT, 
+	UserFlag TINYINT
+)  
 ```
-### 3. Data Reduction Strategy
-Passed the input filter values to the nested stored procedure to apply early filtering techniques to minimize row processing. Prepare a json with the relevant filter values and pass it to the nested procedure so that the filter can be applied there before returning the data to the main procedure. In this way the main procedure can work with a smaller set of data.
+
+### 2.	Applying early-stage filtering to reduce dataset size
+Moved the filtering from the main procedure to the nested procedure
 ```sql
 -- before optimization
-
---Get authrorized medical cases
-	INSERT INTO @AuthCaseList
-	EXEC USP_GetAuthCaseListByUser
-		@StartDate = @StartDate,
-		@EndDate = @EndDate,
-		@UserId = @UserId, 
-		@FilterValues = NULL
-
-	SELECT mc.MedicalCaseId,
-		.
-		.
-	FROM MedicalCases mc
-	INNER JOIN @AuthCaseList ac ON mc.MedicalCaseId = ac.MedicalCaseId
-		.
-		.
-	WHERE  
-		( @StartDate IS NULL OR CAST(cpd.EventDatetime AS DATE) >= @StartDate ) AND 
-		( @EndDate IS NULL OR CAST(cpd.EventDatetime AS DATE) <= @EndDate ) AND 
-		( @CaseStatusId IS NULL OR mc.CaseStatusId = @CaseStatusId ) AND 
-		( @PatientName IS NULL OR CONCAT_WS(' ', p.firstname, p.middlename, p.lastname) LIKE'%' + @PatientName + '%') AND
-		( @PatientDOB IS NULL OR p.dateofbirth = @PatientDOB ) AND 
-		( @OrganizationId IS NULL OR cpd.OrganizationId = @OrganizationId ) AND 
-		( @PrimaryPhysicianId IS NULL OR cpd.primarysurgeonid = @PrimaryPhysicianId ) AND 
-		( @MedicalCaseId IS NULL OR mc.MedicalCaseId = @MedicalCaseId )
+The filters were applied in the main procedure GetDashboardCases.
 
 -- after optimization
-	SET @FilterValues = ''
+-- prepare the sql statement with filter values from the cases related tables. it should be applied at the initial stage of finding the authorized cases.
+IF EXISTS (SELECT 1 FROM #FilterValues WHERE Fields = 'Organization')
+	SET @sqlbasicfilter = @sqlbasicfilter + ' AND cpd.OrganizationId in (SELECT [IntValues] FROM #FilterValues WHERE Fields = ''Organization'')'
+IF EXISTS (SELECT 1 FROM #FilterValues WHERE Fields = 'MedicalCaseId')
+	SET @sqlbasicfilter = @sqlbasicfilter + ' AND cpd.MedicalCaseId in (SELECT [IntValues] FROM #FilterValues WHERE Fields = ''MedicalCaseId'')'
+IF EXISTS (SELECT 1 FROM #FilterValues WHERE Fields = 'PrimaryPhysician')
+	SET @sqlbasicfilter = @sqlbasicfilter + ' AND cpd.PrimayPhysicianId in (SELECT [Values] FROM #FilterValues WHERE Fields = ''PrimaryPhysician'')'
+```
+### 3. Functions (in the filter condition) executing row by row
+Increament @EndDate by 1 day to avoid the date conversion of eventdatetime in the where clause
+```sql
+-- before optimization
+ WHERE    
+	(@StartDate IS NULL OR CAST(cpd.EventDateTime AS DATE) >= @StartDate) AND   
+	(@EndDate IS NULL OR CAST(cpd.EventDateTime AS DATE) <= @EndDate) 
 
-	IF(@HOSPITAL IS NOT NULL)
-		SET @FilterValues = @FilterValues+',{"Field":"Organization","Values":["'+@OrganizationIdName+'"]}'
+-- after optimization
+IF @EndDate IS NOT NULL 
+	SET @EndDate = DATEADD(day, 1, @EndDate)
 
-	IF(@PRIMARYphysicianID IS NOT NULL)
-		SET @FilterValues = @FilterValues+',{"Field":"PrimaryPhysician","Values":["'+@PrimaryPhysicianId+'"]}'
+SELECT
+.
+.
+WHERE 
+	(@StartDate IS NULL OR cpd.EventDateTime >= @StartDate) AND   
+	(@EndDate IS NULL OR cpd.EventDateTime < @EndDate) 
+```
 
-	IF(@MedicalCaseId IS NOT NULL)
-		SET @FilterValues = CONCAT(@FilterValues, ',{"Field":"MedicalCaseId","Values":["', @MedicalCaseId, '"]}')
+### 3. Splitting complex OR conditions into optimized execution branches 
+Building conditional JOINs dynamically based on authorization type so that unnecessary table joins can be avoided keeping the query as short as possible for final execution.
 
-	IF @FilterValues != ''
-		SET @FilterValues = STUFF(@FilterValues, 1, 1, '[') + ']'
-	ELSE 
-		SET @FilterValues = '[]'
+```sql
+-- before optimization
+--Step 1 execution - get list of medical cases by current user's authorization  
+INSERT INTO @AuthCaseList  
+SELECT cpd.MedicalCaseId  
+FROM CasePlanningDetails cpd  
+INNER JOIN @AuthorizedPhysiciansAndLocations auth  ON (auth.PrimaryPhysicianId IS NULL OR cpd.PrimaryPhysicianId = auth.PrimaryPhysicianId )  
+	AND (auth.OrganizationId IS NULL OR cpd.OrganizationId = auth.OrganizationId )  
+	AND auth.AccessTypeId != 7
+WHERE    
+	(@StartDate IS NULL OR CAST(cpd.EventDateTime AS DATE) >= @StartDate) AND   
+	(@EndDate IS NULL OR CAST(cpd.EventDateTime AS DATE) <= @EndDate) 
+GROUP BY cpd.MedicalCaseId  
 
-  --Get authrorized medical cases
-	INSERT INTO @AuthCaseList
-	EXEC USP_GetAuthCaseListByUser
-		@StartDate = @StartDate,
-		@EndDate = @EndDate,
-		@UserId = @UserId, 
-		@FilterValues = @FilterValues
+--Step 2: Get list of cases WHERE current user's authorized Physicians are present as additional Physicians   
+.
+.
 
+-- Step 3: Get the case list based on the authorization applicable for Special approver role
+.
+.
+
+ IF @FilterValues IS NULL  
+ BEGIN   
+  SELECT MedicalCaseId FROM @AuthCaseList GROUP BY MedicalCaseId;  
+ END   
+
+-- after optimization
+SET @sql = 'SELECT t.MedicalCaseId FROM (SELECT MedicalCaseId FROM MedicalCases WHERE 1=2'
+
+--Step 1 - get list of cases for Physician role (include cases for secondary Physicians)
+IF EXISTS (SELECT VALUE FROM string_split(@authaccessTypes,',') WHERE VALUE in (1, 2, 3))
+BEGIN
+	SET @sql = @sql  + ' UNION
+	SELECT cpd.MedicalCaseId  
+	FROM CasePlanningDetails cpd  
+	INNER JOIN #AuthorizedPhysiciansAndOrganizations auth ON cpd.OrganizationId = auth.OrganizationId 
+	WHERE auth.UserFlag = 1 AND 
+	(@StartDate IS NULL OR cpd.EventDateTime >= @StartDate) AND   
+	(@EndDate IS NULL OR cpd.EventDateTime < @EndDate) 
+	AND cpd.PrimayPhysicianId = @UserId'+@sqlbasicfilter+ 
+	' UNION
+	SELECT cpd.MedicalCaseId  
+	FROM CasePlanningDetails cpd  
+	INNER JOIN #AuthorizedPhysiciansAndOrganizations auth ON cpd.OrganizationId = auth.OrganizationId 
+	INNER JOIN CaseAdditionalPhysicians cap ON cpd.PlanningDetailId = cap.PlanningDetailId AND cap.IsActive = 1
+	WHERE auth.UserFlag = 1 AND 
+	(@StartDate IS NULL OR cpd.EventDateTime >= @StartDate) AND   
+	(@EndDate IS NULL OR cpd.EventDateTime < @EndDate) 
+	AND cap.AdditionalPhysicianId = @UserId'+@sqlbasicfilter
+END
+ELSE IF EXISTS (SELECT VALUE FROM string_split(@authaccessTypes,',') WHERE VALUE not in (1, 2, 3, 7))
+BEGIN
+	--get list of cases where logged in user is not Physician but present as secondary Physician
+	SET @sql = @sql  + ' UNION
+	SELECT cpd.MedicalCaseId  
+	FROM CasePlanningDetails cpd  
+	INNER JOIN CaseAdditionalPhysicians cap ON cpd.PlanningDetailId = cap.PlanningDetailId AND cap.IsActive = 1
+	WHERE 
+	(@StartDate IS NULL OR cpd.EventDateTime >= @StartDate) AND   
+	(@EndDate IS NULL OR cpd.EventDateTime < @EndDate) 
+	AND cap.AdditionalPhysicianId = @UserId'+@sqlbasicfilter
+END
+
+--Step 2 - get cases for non-Physician users
+IF EXISTS (SELECT VALUE FROM string_split(@authaccessTypes,',') WHERE VALUE not in (1, 2, 3, 7))
+BEGIN
+	.
+	.
+END	
+END
+
+--Step 3 - get list of cases for special approver role
+IF EXISTS (SELECT VALUE FROM string_split(@authaccessTypes,',') WHERE VALUE in (7))
+BEGIN
+	.
+	.
+END
+SET @sql = @sql+') t'
+
+SET @sql = @sql+@sqlfilter
+--print @sql
+EXEC sp_executesql @sql, N'@UserId NVARCHAR(50), @StartDate DATE, @EndDate DATE', @UserId=@UserId, @StartDate=@StartDate, @EndDate=@EndDate
+
+```
