@@ -15,10 +15,10 @@ BEGIN
 	DECLARE @AuthCaseList TABLE (MedicalCaseId INT)
 	SET @FilterValues = ''
 
-	IF(@HOSPITAL IS NOT NULL)
+	IF(@OrganizationIdName IS NOT NULL)
 		SET @FilterValues = @FilterValues+',{"Field":"Organization","Values":["'+@OrganizationIdName+'"]}'
 
-	IF(@PRIMARYphysicianID IS NOT NULL)
+	IF(@PrimaryPhysicianId IS NOT NULL)
 		SET @FilterValues = @FilterValues+',{"Field":"PrimaryPhysician","Values":["'+@PrimaryPhysicianId+'"]}'
 
 	IF(@MedicalCaseId IS NOT NULL)
@@ -31,7 +31,7 @@ BEGIN
 
 	--Get authrorized medical cases
 	INSERT INTO @AuthCaseList
-	EXEC USP_GetAuthCaseListByUser
+	EXEC GetAuthCaseListByUser
 		@StartDate = @StartDate,
 		@EndDate = @EndDate,
 		@UserId = @UserId, 
@@ -39,13 +39,13 @@ BEGIN
 
 	SELECT mc.MedicalCaseId,
 		cpd.PrimaryPhysicianId,
-		CONCAT_WS(' ', concat(TU.LastName, ','), TU.FirstName, TU.MiddleName ) AS PrimaryPhysicianName ,
+		CONCAT_WS(' ', concat(u.LastName, ','), u.FirstName, u.MiddleName ) AS PrimaryPhysicianName ,
 		cpd.EventDatetime,
 		mc.CaseStatusId,
 		lcs.CaseStatusName AS CaseStatus,
 		p.PatientId,
-		CONCAT_WS(' ', concat(pp.lastname, ','), pp.firstname, pp.middlename) AS patientfullname,
-		p.dateofbirth AS PatientDOB,
+		CONCAT_WS(' ', concat(p.lastname, ','), p.firstname, p.middlename) AS patientfullname,
+		p.DOB AS PatientDOB,
 		ISNULL(dcm.TotalDocs, 0),
 		cpd.OrganizationId,
 		org.OrganizationName AS ClinicName
@@ -64,11 +64,9 @@ BEGIN
 	) dcm ON mc.MedicalCaseId = dcm.MedicalCaseId
 	WHERE 
 		( @PatientName IS NULL OR CONCAT_WS(' ', p.firstname, p.middlename, p.lastname) LIKE'%' + @PatientName + '%') AND
-		( @PatientDOB IS NULL OR p.dateofbirth = @PatientDOB ) AND 
+		( @PatientDOB IS NULL OR p.DOB = @PatientDOB )  
 	ORDER  BY cpd.eventdatetime 
 
 END
 
 GO
-
-
