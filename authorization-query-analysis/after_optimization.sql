@@ -72,7 +72,7 @@ SET NOCOUNT ON;
 	select DISTINCT 
 	@UserId, ura.OrganizationId, 1
 	from UserRoleMapping urm   
-	inner join TRD_Roles r on urm. RoleId = r.RoleId   
+	inner join Roles r on urm. RoleId = r.RoleId   
 	inner join UserRoleAuthorizations ura on urm.UserRoleId = ura.UserRoleId  
 	where urm.UserId = @UserId and urm.IsActive = 1  
 	and AccessTypeId in (1, 2, 3) and ura.IsActive = 1 
@@ -83,7 +83,7 @@ SET NOCOUNT ON;
 	select DISTINCT 
 	ura.PhysicianId, ura.OrganizationId
 	from UserRoleMapping urm   
-	inner join TRD_Roles r on urm. RoleId = r.RoleId   
+	inner join Roles r on urm. RoleId = r.RoleId   
 	inner join UserRoleAuthorizations ura on urm.UserRoleId = ura.UserRoleId  
 	where urm.UserId = @UserId and urm.IsActive = 1  
 	and AccessTypeId not in (1, 2, 3, 7) and ura.IsActive = 1 
@@ -94,7 +94,7 @@ SET NOCOUNT ON;
 	select 
 	ura.PhysicianId, ura.OrganizationId, 2
 	from UserRoleMapping urm   
-	inner join TRD_Roles r on urm. RoleId = r.RoleId   
+	inner join Roles r on urm. RoleId = r.RoleId   
 	inner join UserRoleAuthorizations ura on urm.UserRoleId = ura.UserRoleId  
 	where urm.UserId = @UserId and urm.IsActive = 1  
 	and AccessTypeId in (7) and ura.IsActive = 1 ;  
@@ -139,10 +139,10 @@ SET NOCOUNT ON;
 		AND cap.AdditionalPhysicianId = @UserId'+@sqlbasicfilter
 	END
 
-	-- get cases for non-Physician users
+	--Step 2 - get cases for non-Physician users
 	IF EXISTS (SELECT VALUE FROM string_split(@authaccessTypes,',') WHERE VALUE not in (1, 2, 3, 7))
 	BEGIN
-		--Step 1 - get cases by Organization
+		--Step 2.1 - get cases by Organization
 		IF EXISTS (SELECT 1 FROM #AuthorizedPhysiciansAndOrganizations WHERE UserFlag IS NULL AND PrimayPhysicianId IS NULL AND OrganizationId IS NOT NULL AND ProcedureUnitId IS NULL)
 			SET @sql = @sql  + ' UNION
 			SELECT cpd.MedicalCaseId  
@@ -153,7 +153,7 @@ SET NOCOUNT ON;
 			(@EndDate IS NULL OR cpd.EventDateTime < @EndDate) 
 			AND nauth.PrimayPhysicianId IS NULL AND nauth.OrganizationId IS NOT NULL '+@sqlbasicfilter
 
-		--Step 3 - get cases by PrimaryPhysician
+		--Step 2.2 - get cases by PrimaryPhysician
 		IF EXISTS (SELECT 1 FROM #AuthorizedPhysiciansAndOrganizations WHERE UserFlag IS NULL AND PrimayPhysicianId IS NOT NULL AND OrganizationId IS NULL)
 		BEGIN
 			SET @sql = @sql  + ' UNION
@@ -177,7 +177,7 @@ SET NOCOUNT ON;
 			AND nauth.PrimayPhysicianId IS NOT NULL AND nauth.OrganizationId IS NULL'+@sqlbasicfilter
 		END
 				
-		--Step 4 - get cases by PrimaryPhysician, Organization
+		--Step 2.3 - get cases by PrimaryPhysician, Organization
 		IF EXISTS (SELECT 1 FROM #AuthorizedPhysiciansAndOrganizations WHERE UserFlag IS NULL AND PrimayPhysicianId IS NOT NULL AND OrganizationId IS NOT NULL)
 		BEGIN
 			SET @sql = @sql  + ' UNION
@@ -204,10 +204,10 @@ SET NOCOUNT ON;
 
 	END
 
-	-- get list of cases for special approver role
+	--Step 3 - get list of cases for special approver role
 	IF EXISTS (SELECT VALUE FROM string_split(@authaccessTypes,',') WHERE VALUE in (7))
 	BEGIN
-		--Step 1 - get cases by Organization
+		--Step 3.1 - get cases by Organization
 		IF EXISTS (SELECT 1 FROM #AuthorizedPhysiciansAndOrganizations WHERE UserFlag = 2 AND PrimayPhysicianId IS NULL AND OrganizationId IS NOT NULL)
 			SET @sql = @sql  + ' UNION
 			SELECT cpd.MedicalCaseId  
@@ -220,7 +220,7 @@ SET NOCOUNT ON;
 			AND nauth.PrimayPhysicianId IS NULL AND nauth.OrganizationId  IS NOT NULL '+@sqlbasicfilter
 
 		--rare scenario 
-		--Step 2 - get cases by PrimaryPhysician / Organization
+		--Step 3.2 - get cases by PrimaryPhysician / Organization
 		IF EXISTS (SELECT 1 FROM #AuthorizedPhysiciansAndOrganizations WHERE UserFlag IS NULL AND PrimayPhysicianId IS NOT NULL)
 			SET @sql = @sql  + ' UNION
 			SELECT cpd.MedicalCaseId  
@@ -237,10 +237,8 @@ SET NOCOUNT ON;
 
 	SET @sql = @sql+@sqlfilter
 	--print @sql
-	EXEC sp_executesql @sql, N'@UserId NVARCHAR(50), @StartDate DATE, @EndDate DATE, @AuthorizedMedicalCaseIds NVARCHAR(MAX)', @UserId=@UserId, @StartDate=@StartDate, @EndDate=@EndDate, @AuthorizedMedicalCaseIds=@AuthorizedMedicalCaseIds
+	EXEC sp_executesql @sql, N'@UserId NVARCHAR(50), @StartDate DATE, @EndDate DATE', @UserId=@UserId, @StartDate=@StartDate, @EndDate=@EndDate
 
 SET NOCOUNT OFF;  
 END;  
 GO
-
-
