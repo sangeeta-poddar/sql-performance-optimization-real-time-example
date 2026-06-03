@@ -1,4 +1,4 @@
-CREATE   PROCEDURE [dbo].[USP_GetAuthCaseListByUser] ( 
+CREATE   PROCEDURE [dbo].[GetAuthCaseListByUser] ( 
 		@StartDate DATE,
 		@EndDate DATE,
 		@UserId	NVARCHAR(50),  
